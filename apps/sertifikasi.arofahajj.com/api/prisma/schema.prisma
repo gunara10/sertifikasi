@@ -1,0 +1,214 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User management
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  password          String
+  firstName         String
+  lastName          String
+  phone             String?
+  avatar            String?
+  emailVerified     Boolean  @default(false)
+  isActive          Boolean  @default(true)
+  lastLoginAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  applications      Application[]
+  certificates      Certificate[]
+  auditLogs         AuditLog[]
+  sessions          Session[]
+
+  @@map("users")
+}
+
+// Session management
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// Application management
+model Application {
+  id                String      @id @default(cuid())
+  userId            String
+  type              ApplicationType
+  status            ApplicationStatus @default(DRAFT)
+  serialNumber      String?     @unique
+  title             String
+  description       String?
+  data              Json        // Flexible JSON for different application types
+  submittedAt       DateTime?
+  reviewedAt        DateTime?
+  approvedAt        DateTime?
+  rejectedAt        DateTime?
+  reviewerId        String?
+  rejectionReason   String?
+  notes             String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  // Relations
+  user              User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviewer          User?       @relation("ApplicationReviewer", fields: [reviewerId], references: [id])
+  documents         Document[]
+  certificates      Certificate[]
+  workflowHistory   WorkflowHistory[]
+  auditLogs         AuditLog[]
+
+  @@map("applications")
+}
+
+// Document management
+model Document {
+  id            String        @id @default(cuid())
+  applicationId String
+  type          DocumentType
+  name          String
+  originalName  String
+  mimeType      String
+  size          Int
+  path          String
+  url           String?
+  isRequired    Boolean       @default(false)
+  isVerified    Boolean       @default(false)
+  uploadedAt    DateTime      @default(now())
+  verifiedAt    DateTime?
+  verifiedBy    String?
+
+  application   Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+// Certificate management
+model Certificate {
+  id                String            @id @default(cuid())
+  applicationId     String
+  userId            String
+  type              CertificateType
+  serialNumber      String            @unique
+  title             String
+  description       String?
+  issuedAt          DateTime          @default(now())
+  expiresAt         DateTime?
+  issuer            String
+  issuerSignature   String?
+  qrCodeUrl         String?
+  verificationUrl   String
+  pdfUrl            String?
+  isActive          Boolean           @default(true)
+  revokedAt         DateTime?
+  revokedReason     String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  // Relations
+  application       Application       @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  user              User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("certificates")
+}
+
+// Workflow history
+model WorkflowHistory {
+  id            String              @id @default(cuid())
+  applicationId String
+  fromStatus    ApplicationStatus?
+  toStatus      ApplicationStatus
+  actorId       String?
+  actorType     ActorType           @default(SYSTEM)
+  reason        String?
+  metadata      Json?
+  createdAt     DateTime            @default(now())
+
+  application   Application         @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("workflow_history")
+}
+
+// Audit logs
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  action      String
+  resource    String
+  resourceId  String?
+  oldValues   Json?
+  newValues   Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  user        User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+// Enums
+enum ApplicationType {
+  PPIU
+  PIHK
+  KBIHU
+  TRAVEL
+  HOTEL
+  TRANSPORT
+}
+
+enum ApplicationStatus {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  ADDITIONAL_INFO_REQUIRED
+  APPROVED
+  REJECTED
+  CERTIFIED
+  EXPIRED
+}
+
+enum DocumentType {
+  ID_CARD
+  PASSPORT
+  COMPANY_REGISTRATION
+  TAX_ID
+  BANK_ACCOUNT
+  INSURANCE
+  LEGAL_DOCUMENT
+  FINANCIAL_STATEMENT
+  EXPERIENCE_CERTIFICATE
+  OTHER
+}
+
+enum CertificateType {
+  PPIU_CERTIFICATE
+  PIHK_CERTIFICATE
+  KBIHU_CERTIFICATE
+  TEMPORARY_CERTIFICATE
+  REVOCATION_CERTIFICATE
+}
+
+enum ActorType {
+  USER
+  ADMIN
+  REVIEWER
+  SYSTEM
+}
