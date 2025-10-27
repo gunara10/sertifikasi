@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { BullModule } from '@nestjs/bull';
 
@@ -17,20 +17,32 @@ import { RedisModule } from './config/redis.module';
     }),
     ThrottlerModule.forRoot([
       {
-        ttl: 60000, // 1 minute
-        limit: 100, // 100 requests per minute
+        ttl: 60_000, // 1 menit
+        limit: 100,  // 100 req/menit
       },
     ]),
-    BullModule.forRoot({
-      redis: {
-        host: process.env.REDIS_HOST || 'localhost',
-        port: parseInt(process.env.REDIS_PORT) || 6379,
-      },
+    // Konfigurasi Bull + Redis (boleh forRootAsync agar pakai ConfigService)
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: async (config: ConfigService) => ({
+        redis: {
+          host: config.get<string>('REDIS_HOST') || '127.0.0.1',
+          port: Number.parseInt(config.get<string>('REDIS_PORT') || '6379', 10),
+          password: config.get<string>('REDIS_PASSWORD') || undefined,
+        },
+      }),
+      inject: [ConfigService],
     }),
+    // Daftarkan queue yang dipakai processor
+    BullModule.registerQueue({ name: 'application-queue' }),
+
+    // Global resources
     DatabaseModule,
     RedisModule,
-    AuthModule,
+
+    // Feature modules
     UsersModule,
+    AuthModule,
     ApplicationsModule,
   ],
   controllers: [],
