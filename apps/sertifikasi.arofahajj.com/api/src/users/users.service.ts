@@ -1,9 +1,14 @@
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../config/prisma.service';
 import { Neo4jService } from '../config/neo4j.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import * as bcrypt from 'bcryptjs';
+import { Prisma, ApplicationStatus } from '@prisma/client';
 
 @Injectable()
 export class UsersService {
@@ -15,11 +20,10 @@ export class UsersService {
   async create(createUserDto: CreateUserDto) {
     const { email, password, ...rest } = createUserDto;
 
-    // Check if user already exists
+    // Cek user eksis
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
     });
-
     if (existingUser) {
       throw new ConflictException('User with this email already exists');
     }
@@ -27,7 +31,7 @@ export class UsersService {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user in PostgreSQL
+    // Buat user di PostgreSQL
     const user = await this.prisma.user.create({
       data: {
         email,
@@ -48,11 +52,11 @@ export class UsersService {
       },
     });
 
-    // Create user node in Neo4j
+    // Buat node user di Neo4j
     await this.neo4j.createWorkflowNode('User', {
       id: user.id,
       email: user.email,
-      name: `${user.firstName} ${user.lastName}`,
+      name: `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim(),
       createdAt: user.createdAt.toISOString(),
     });
 
@@ -62,15 +66,15 @@ export class UsersService {
   async findAll(page = 1, limit = 10, search?: string) {
     const skip = (page - 1) * limit;
 
-    const where = search
-      ? {
-          OR: [
-            { firstName: { contains: search, mode: 'insensitive' } },
-            { lastName: { contains: search, mode: 'insensitive' } },
-            { email: { contains: search, mode: 'insensitive' } },
-          ],
-        }
-      : {};
+    const where: Prisma.UserWhereInput = {};
+    if (search) {
+      const mode = Prisma.QueryMode.insensitive;
+      where.OR = [
+        { firstName: { contains: search, mode } },
+        { lastName:  { contains: search, mode } },
+        { email:     { contains: search, mode } },
+      ];
+    }
 
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
@@ -167,10 +171,21 @@ export class UsersService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
-    const { password, ...rest } = updateUserDto;
+    const { password, email, ...rest } = updateUserDto;
 
-    const updateData: any = { ...rest };
+    // Kalau ganti email, pastikan tidak bentrok dengan user lain
+    if (email) {
+      const dup = await this.prisma.user.findUnique({ where: { email } });
+      if (dup && dup.id !== id) {
+        throw new ConflictException('Another user already uses this email');
+      }
+    }
 
+    const updateData: Prisma.UserUpdateInput = {
+      ...rest,
+    };
+
+    if (email) updateData.email = email;
     if (password) {
       updateData.password = await bcrypt.hash(password, 10);
     }
@@ -193,7 +208,7 @@ export class UsersService {
       },
     });
 
-    // Update user node in Neo4j
+    // Update node user di Neo4j
     await this.neo4j.runQuery(
       `
       MATCH (u:User {id: $id})
@@ -204,7 +219,7 @@ export class UsersService {
         id,
         properties: {
           email: user.email,
-          name: `${user.firstName} ${user.lastName}`,
+          name: `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim(),
         },
       }
     );
@@ -213,12 +228,17 @@ export class UsersService {
   }
 
   async remove(id: string) {
-    // Check if user has active applications
+    // Cek apakah user punya aplikasi aktif
     const activeApplications = await this.prisma.application.count({
       where: {
         userId: id,
         status: {
-          in: ['SUBMITTED', 'IN_REVIEW', 'APPROVED', 'CERTIFIED'],
+          in: [
+            ApplicationStatus.SUBMITTED,
+            ApplicationStatus.IN_REVIEW,
+            ApplicationStatus.APPROVED,
+            ApplicationStatus.CERTIFIED,
+          ],
         },
       },
     });
@@ -229,7 +249,7 @@ export class UsersService {
       );
     }
 
-    // Delete user node from Neo4j
+    // Hapus node user dari Neo4j
     await this.neo4j.runQuery(
       `
       MATCH (u:User {id: $id})
@@ -238,7 +258,7 @@ export class UsersService {
       { id }
     );
 
-    // Delete user from PostgreSQL (cascade will handle related records)
+    // Hapus user dari PostgreSQL (cascade menangani relasi)
     await this.prisma.user.delete({
       where: { id },
     });
