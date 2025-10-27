@@ -3,11 +3,12 @@ import {
   Post,
   Body,
   UseGuards,
-  Req,
   HttpCode,
   HttpStatus,
   Get,
   Delete,
+  Param,
+  Headers,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
@@ -29,12 +30,20 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   async login(
     @Body() loginDto: LoginDto,
-    @Req() req: Request,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
-    const ipAddress = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || 'unknown';
-    const userAgent = req.headers['user-agent'] || 'unknown';
-    
-    return this.authService.login(loginDto, ipAddress as string, userAgent as string);
+    const xfwd = headers['x-forwarded-for'];
+    const xreal = headers['x-real-ip'];
+    const ua = headers['user-agent'];
+
+    const ipAddress =
+      (Array.isArray(xfwd) ? xfwd[0] : xfwd) ||
+      (Array.isArray(xreal) ? xreal[0] : xreal) ||
+      'unknown';
+
+    const userAgent = Array.isArray(ua) ? ua[0] : ua || 'unknown';
+
+    return this.authService.login(loginDto, String(ipAddress), String(userAgent));
   }
 
   @Post('register')
@@ -43,12 +52,20 @@ export class AuthController {
   @ApiResponse({ status: 409, description: 'User already exists' })
   async register(
     @Body() registerDto: RegisterDto,
-    @Req() req: Request,
+    @Headers() headers: Record<string, string | string[] | undefined>,
   ) {
-    const ipAddress = req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || 'unknown';
-    const userAgent = req.headers['user-agent'] || 'unknown';
-    
-    return this.authService.register(registerDto, ipAddress as string, userAgent as string);
+    const xfwd = headers['x-forwarded-for'];
+    const xreal = headers['x-real-ip'];
+    const ua = headers['user-agent'];
+
+    const ipAddress =
+      (Array.isArray(xfwd) ? xfwd[0] : xfwd) ||
+      (Array.isArray(xreal) ? xreal[0] : xreal) ||
+      'unknown';
+
+    const userAgent = Array.isArray(ua) ? ua[0] : ua || 'unknown';
+
+    return this.authService.register(registerDto, String(ipAddress), String(userAgent));
   }
 
   @Post('logout')
@@ -124,9 +141,8 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Session revoked successfully' })
   async revokeSession(
     @CurrentUser() user: any,
-    @Req() req: Request,
+    @Param('sessionId') sessionId: string,
   ) {
-    const sessionId = (req.params as any).sessionId;
     return this.authService.revokeSession(sessionId, user.id);
   }
 }
