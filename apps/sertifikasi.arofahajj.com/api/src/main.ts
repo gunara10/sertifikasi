@@ -4,11 +4,12 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Jika berada di belakang reverse proxy (Nginx/Caddy), aktifkan ini
+  // Aktifkan trust proxy (kalau di belakang Nginx/Caddy)
   app.set('trust proxy', 1);
 
   // Global pipes
@@ -21,16 +22,13 @@ async function bootstrap() {
     }),
   );
 
-  // Global guards -> SUDAH via APP_GUARD di AppModule (hapus baris manual)
-  // app.useGlobalGuards(app.get(ThrottlerGuard));
-
   // Global filters
   app.useGlobalFilters(new HttpExceptionFilter());
 
   // Global interceptors
   app.useGlobalInterceptors(new ResponseInterceptor());
 
-  // CORS configuration
+  // CORS
   const corsOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
   app.enableCors({
     origin: corsOrigin,
@@ -42,7 +40,7 @@ async function bootstrap() {
   // API prefix
   app.setGlobalPrefix('api');
 
-  // Swagger documentation
+  // Swagger docs
   const config = new DocumentBuilder()
     .setTitle('Sertifikasi Arofahajj API')
     .setDescription('API documentation for Sertifikasi Arofahajj Platform')
