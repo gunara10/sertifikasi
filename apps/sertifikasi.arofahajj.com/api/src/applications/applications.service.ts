@@ -5,7 +5,7 @@ import { RedisService } from '../config/redis.service';
 import { CreateApplicationDto } from './dto/create-application.dto';
 import { UpdateApplicationDto } from './dto/update-application.dto';
 import { UpdateApplicationStatusDto } from './dto/update-application-status.dto';
-import { ApplicationStatus, ActorType } from '@prisma/client';
+import { ApplicationStatus, ActorType, Prisma, $Enums } from '@prisma/client';
 
 @Injectable()
 export class ApplicationsService {
@@ -18,14 +18,17 @@ export class ApplicationsService {
   async create(createApplicationDto: CreateApplicationDto, userId: string) {
     const { type, title, description, data } = createApplicationDto;
 
+    // Pastikan type berupa enum Prisma
+    const typeEnum = this.toApplicationTypeEnum(type);
+
     // Generate serial number
-    const serialNumber = await this.generateSerialNumber(type);
+    const serialNumber = await this.generateSerialNumber(typeEnum);
 
     // Create application in PostgreSQL
     const application = await this.prisma.application.create({
       data: {
         userId,
-        type,
+        type: typeEnum,
         title,
         description,
         data,
@@ -90,7 +93,7 @@ export class ApplicationsService {
   ) {
     const skip = (page - 1) * limit;
 
-    const where: any = {};
+    const where: Prisma.ApplicationWhereInput = {};
 
     if (userId) {
       where.userId = userId;
@@ -101,15 +104,22 @@ export class ApplicationsService {
     }
 
     if (type) {
-      where.type = type;
+      const typeEnum = this.toApplicationTypeEnum(type);
+      if (typeEnum) {
+        // Prisma 5+: pakai { equals: enum }
+        where.type = { equals: typeEnum };
+      }
     }
 
     if (search) {
+      const insensitive = Prisma.QueryMode.insensitive;
       where.OR = [
-        { title: { contains: search, mode: 'insensitive' } },
-        { serialNumber: { contains: search, mode: 'insensitive' } },
-        { user: { firstName: { contains: search, mode: 'insensitive' } } },
-        { user: { lastName: { contains: search, mode: 'insensitive' } } },
+        { title: { contains: search, mode: insensitive } },
+        { serialNumber: { contains: search, mode: insensitive } },
+        // Nested relation filter ke user HARUS pakai "is"
+        { user: { is: { firstName: { contains: search, mode: insensitive } } } },
+        { user: { is: { lastName: { contains: search, mode: insensitive } } } },
+        { user: { is: { email: { contains: search, mode: insensitive } } } },
       ];
     }
 
@@ -203,6 +213,7 @@ export class ApplicationsService {
         },
         workflowHistory: {
           include: {
+            // Asumsi: kamu punya relasi actor -> User di model (kalau tidak, hapus block ini)
             actor: {
               select: {
                 id: true,
@@ -403,10 +414,9 @@ export class ApplicationsService {
       reason || notes || `Status changed to ${status}`
     );
 
-    // If approved, create certificate
+    // If approved, create certificate (placeholder)
     if (status === ApplicationStatus.APPROVED) {
-      // This would trigger certificate creation
-      // For now, we'll just log it
+      // Trigger certificate creation job di tempat lain jika sudah ada
       console.log(`Certificate creation triggered for application ${id}`);
     }
 
@@ -453,16 +463,14 @@ export class ApplicationsService {
     return { message: 'Application deleted successfully' };
   }
 
-  private async generateSerialNumber(type: string): Promise<string> {
+  private async generateSerialNumber(type: $Enums.ApplicationType): Promise<string> {
     const year = new Date().getFullYear();
-    const prefix = `${type.toUpperCase()}-${year}`;
-    
+    const prefix = `${type.toUpperCase?.() ?? String(type)}-${year}`;
+
     const count = await this.prisma.application.count({
       where: {
-        type,
-        serialNumber: {
-          startsWith: prefix,
-        },
+        type: { equals: type },
+        serialNumber: { startsWith: prefix },
       },
     });
 
@@ -491,7 +499,7 @@ export class ApplicationsService {
   }
 
   async getStatistics(userId?: string) {
-    const where = userId ? { userId } : {};
+    const where: Prisma.ApplicationWhereInput = userId ? { userId } : {};
 
     const [
       total,
@@ -520,5 +528,17 @@ export class ApplicationsService {
       rejected,
       certified,
     };
+  }
+
+  // Helper untuk konversi string → enum ApplicationType yang valid
+  private toApplicationTypeEnum(type?: string | $Enums.ApplicationType): $Enums.ApplicationType | undefined {
+    if (!type) return undefined;
+    // Jika sudah enum, kembalikan apa adanya
+    if (Object.values($Enums.ApplicationType).includes(type as $Enums.ApplicationType)) {
+      return type as $Enums.ApplicationType;
+    }
+    // Normalisasi dari string bebas ke enum (UPPERCASE)
+    const c = String(type).toUpperCase() as $Enums.ApplicationType;
+    return Object.values($Enums.ApplicationType).includes(c) ? c : undefined;
   }
 }
