@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: arofahajj_sertifikasi
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: B3rk@h165165
     ports:
       - "5432:5432"
     volumes:
