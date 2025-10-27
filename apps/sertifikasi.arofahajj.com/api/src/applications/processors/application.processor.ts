@@ -3,62 +3,77 @@ import { Job } from 'bull';
 import { Logger } from '@nestjs/common';
 import { ApplicationsService } from '../applications.service';
 import { PrismaService } from '../../config/prisma.service';
+import { ApplicationStatus, $Enums, Prisma } from '@prisma/client';
+
+type SendNotificationPayload = {
+  applicationId: string;
+  type: string;
+  recipient: string;
+  data?: Record<string, any>;
+};
+
+type GenerateCertificatePayload = {
+  applicationId: string;
+  certificateType: $Enums.CertificateType | string; // string diterima, nanti dinormalisasi
+};
+
+type ProcessDocumentVerificationPayload = {
+  documentId: string;
+  verificationType?: string;
+};
 
 @Processor('application-queue')
 export class ApplicationProcessor {
   private readonly logger = new Logger(ApplicationProcessor.name);
 
   constructor(
-    private applicationsService: ApplicationsService,
-    private prisma: PrismaService,
+    private readonly applicationsService: ApplicationsService,
+    private readonly prisma: PrismaService,
   ) {}
 
+  // ============================
+  // Notifications
+  // ============================
   @Process('send-notification')
-  async handleSendNotification(job: Job) {
+  async handleSendNotification(job: Job<SendNotificationPayload>) {
     const { applicationId, type, recipient, data } = job.data;
-    
-    this.logger.log(
-      `Processing notification for application ${applicationId}: ${type}`
-    );
+
+    this.logger.log(`Processing notification for application ${applicationId}: ${type}`);
 
     try {
-      // Here you would integrate with email service, SMS service, etc.
-      // For now, we'll just log the notification
+      // TODO: Integrasi ke email/SMS/push provider
       this.logger.log(
-        `Sending ${type} notification to ${recipient}: ${JSON.stringify(data)}`
+        `Sending ${type} notification to ${recipient}: ${JSON.stringify(data ?? {})}`
       );
 
-      // Example: Send email
-      // await this.emailService.send({
-      //   to: recipient,
-      //   subject: data.subject,
-      //   template: data.template,
-      //   context: data.context,
-      // });
-
-      // Example: Send SMS
-      // await this.smsService.send({
-      //   to: recipient,
-      //   message: data.message,
-      // });
+      // Contoh:
+      // await this.emailService.send({ to: recipient, subject: data?.subject, ... })
 
       return { success: true, message: 'Notification sent successfully' };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
-        `Failed to send notification for application ${applicationId}:`,
-        error
+        `Failed to send notification for application ${applicationId}: ${error?.message}`,
+        error?.stack,
       );
       throw error;
     }
   }
 
+  // ============================
+  // Certificate Generation
+  // ============================
   @Process('generate-certificate')
-  async handleGenerateCertificate(job: Job) {
+  async handleGenerateCertificate(job: Job<GenerateCertificatePayload>) {
     const { applicationId, certificateType } = job.data;
-    
-    this.logger.log(
-      `Generating certificate for application ${applicationId}: ${certificateType}`
-    );
+
+    // Normalisasi certificateType -> enum Prisma
+    const typeEnum = this.toCertificateEnum(certificateType);
+    if (!typeEnum) {
+      this.logger.warn(`Unknown certificate type "${certificateType}" for application ${applicationId}`);
+      throw new Error('Invalid certificate type');
+    }
+
+    this.logger.log(`Generating certificate for application ${applicationId}: ${typeEnum}`);
 
     try {
       // Get application details
@@ -73,33 +88,48 @@ export class ApplicationProcessor {
         throw new Error('Application not found');
       }
 
-      // Generate certificate
+      // Generate serial ONCE (hindari dipanggil dua kali)
+      const serial = await this.generateCertificateSerial(typeEnum);
+
+      // FRONTEND_URL aman
+      const frontendUrlBase = (process.env.FRONTEND_URL || '').replace(/\/+$/, '');
+      const verificationUrl = `${frontendUrlBase || 'http://localhost:3000'}/verify/${serial}`;
+
+      // Create certificate
       const certificate = await this.prisma.certificate.create({
         data: {
           applicationId,
           userId: application.userId,
-          type: certificateType,
-          serialNumber: await this.generateCertificateSerial(certificateType),
-          title: `${certificateType} - ${application.title}`,
+          type: typeEnum,
+          serialNumber: serial,
+          title: `${typeEnum} - ${application.title}`,
           description: `Certificate issued for ${application.title}`,
           issuer: 'Kementerian Agama Republik Indonesia',
-          verificationUrl: `${process.env.FRONTEND_URL}/verify/${await this.generateCertificateSerial(certificateType)}`,
+          verificationUrl,
         },
       });
 
-      this.logger.log(
-        `Certificate generated successfully: ${certificate.serialNumber}`
-      );
+      this.logger.log(`Certificate generated successfully: ${certificate.serialNumber}`);
 
-      // Update application status
+      // Update application status -> CERTIFIED
       await this.prisma.application.update({
         where: { id: applicationId },
         data: {
-          status: 'CERTIFIED',
+          status: ApplicationStatus.CERTIFIED,
         },
       });
 
-      // Queue notification
+      // (Opsional) Tambah workflow history
+      await this.applicationsService['createWorkflowHistory']?.(
+        applicationId,
+        application.status,
+        ApplicationStatus.CERTIFIED,
+        null,
+        'SYSTEM' as any, // jika ActorType.SYSTEM tersedia di service, bisa impor langsung
+        'Certificate generated'
+      ).catch(() => void 0);
+
+      // (Opsional) Queue notification ke user
       // await this.queueService.add('send-notification', {
       //   applicationId,
       //   type: 'certificate_issued',
@@ -116,21 +146,24 @@ export class ApplicationProcessor {
       // });
 
       return { success: true, certificate };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
-        `Failed to generate certificate for application ${applicationId}:`,
-        error
+        `Failed to generate certificate for application ${applicationId}: ${error?.message}`,
+        error?.stack,
       );
       throw error;
     }
   }
 
+  // ============================
+  // Document Verification
+  // ============================
   @Process('process-document-verification')
-  async handleDocumentVerification(job: Job) {
+  async handleDocumentVerification(job: Job<ProcessDocumentVerificationPayload>) {
     const { documentId, verificationType } = job.data;
-    
+
     this.logger.log(
-      `Processing document verification for document ${documentId}: ${verificationType}`
+      `Processing document verification for document ${documentId}${verificationType ? `: ${verificationType}` : ''}`
     );
 
     try {
@@ -139,9 +172,7 @@ export class ApplicationProcessor {
         where: { id: documentId },
         include: {
           application: {
-            include: {
-              user: true,
-            },
+            include: { user: true },
           },
         },
       });
@@ -150,24 +181,18 @@ export class ApplicationProcessor {
         throw new Error('Document not found');
       }
 
-      // Simulate document verification process
-      // In real implementation, this would integrate with:
-      // - OCR services for document text extraction
-      // - AI/ML for document validation
-      // - External APIs for government document verification
-      // - Manual review workflows
+      // Simulate processing time
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Simulate processing time
-
-      // Update document verification status
-      const isVerified = Math.random() > 0.2; // 80% success rate for demo
+      // Demo: 80% success rate
+      const isVerified = Math.random() > 0.2;
 
       await this.prisma.document.update({
         where: { id: documentId },
         data: {
           isVerified,
           verifiedAt: new Date(),
-          verifiedBy: 'SYSTEM', // In real implementation, this would be the reviewer ID
+          verifiedBy: 'SYSTEM', // TODO: set reviewerId nyata jika ada
         },
       });
 
@@ -175,45 +200,54 @@ export class ApplicationProcessor {
         `Document ${documentId} verification ${isVerified ? 'passed' : 'failed'}`
       );
 
-      // If verification fails, you might want to:
-      // - Notify the user to upload a new document
-      // - Flag the application for manual review
-      // - Update application status
-
       if (!isVerified) {
         await this.prisma.application.update({
           where: { id: document.applicationId },
           data: {
-            status: 'ADDITIONAL_INFO_REQUIRED',
+            status: ApplicationStatus.ADDITIONAL_INFO_REQUIRED,
             notes: `Document verification failed: ${document.name}`,
           },
         });
       }
 
       return { success: true, isVerified };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
-        `Failed to verify document ${documentId}:`,
-        error
+        `Failed to verify document ${documentId}: ${error?.message}`,
+        error?.stack,
       );
       throw error;
     }
   }
 
-  private async generateCertificateSerial(type: string): Promise<string> {
-    const year = new Date().getFullYear();
-    const prefix = `CERT-${type.toUpperCase()}-${year}`;
-    
-    const count = await this.prisma.certificate.count({
-      where: {
-        type,
-        serialNumber: {
-          startsWith: prefix,
-        },
-      },
-    });
+  // ============================
+  // Helpers
+  // ============================
+  private toCertificateEnum(
+    t?: $Enums.CertificateType | string
+  ): $Enums.CertificateType | undefined {
+    if (!t) return undefined;
+    if (Object.values($Enums.CertificateType).includes(t as $Enums.CertificateType)) {
+      return t as $Enums.CertificateType;
+    }
+    const upper = String(t).toUpperCase() as $Enums.CertificateType;
+    return Object.values($Enums.CertificateType).includes(upper) ? upper : undefined;
+  }
 
+  private async generateCertificateSerial(
+    type: $Enums.CertificateType
+  ): Promise<string> {
+    const year = new Date().getFullYear();
+    const prefix = `CERT-${String(type).toUpperCase()}-${year}`;
+
+    const where: Prisma.CertificateWhereInput = {
+      type: { equals: type },
+      serialNumber: { startsWith: prefix },
+    };
+
+    const count = await this.prisma.certificate.count({ where });
     const sequence = String(count + 1).padStart(6, '0');
+
     return `${prefix}-${sequence}`;
   }
 }
